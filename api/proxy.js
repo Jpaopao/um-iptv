@@ -7,62 +7,36 @@ const cors = {
   'access-control-expose-headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Type'
 };
 
-const DEFAULT_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const DEFAULT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 export default async function handler(req) {
   const urlObj = new URL(req.url);
   const url = urlObj.searchParams.get('url');
 
-  // CORS preflight
   if (req.method === 'OPTIONS') return new Response(null, { headers: cors });
-
   if (!url) return new Response('Missing url', { status: 400, headers: cors });
   if (!/^http:\/\//i.test(url)) return new Response('Only http:// allowed', { status: 400, headers: cors });
 
-  // ---- Build upstream headers (drop origin/referrer by default) ----
-  const fwd = new Headers();
+  const forward = new Headers();
 
-  // Keep byte-range for video segments
   const range = req.headers.get('range');
-  if (range) fwd.set('range', range);
+  if (range) forward.set('range', range);
 
-  // Only pass content-type on non-GET/HEAD (e.g., license POST)
   const ct = req.headers.get('content-type');
-  if (ct && req.method !== 'GET' && req.method !== 'HEAD') fwd.set('content-type', ct);
+  if (ct && req.method !== 'GET' && req.method !== 'HEAD') forward.set('content-type', ct);
 
-  // Browser-like defaults (some CDNs need these)
-  fwd.set('user-agent', req.headers.get('user-agent') || DEFAULT_UA);
-  fwd.set('accept', req.headers.get('accept') || '*/*');
-  fwd.set('accept-language', req.headers.get('accept-language') || 'en-US,en;q=0.9');
-  fwd.set('connection', 'keep-alive');
-
-  // ---- SPECIAL: some servers 403 on HEAD; convert HEAD -> GET upstream ----
-  const upstreamMethod = (req.method === 'HEAD') ? 'GET' : req.method;
-
-  // ---- OPTIONAL: try looking "same-site" to the IP (helps hotlink-protected hosts) ----
-  // If still 403, UNCOMMENT these two lines:
-   fwd.set('referer', 'http://143.44.136.110/');
-   fwd.set('origin',  'http://143.44.136.110');
+  forward.set('user-agent', DEFAULT_UA);
+  forward.set('accept', '*/*');
+  forward.set('accept-language', 'en-US,en;q=0.9');
+  forward.set('connection', 'keep-alive');
 
   const upstream = await fetch(url, {
-    method: upstreamMethod,
-    headers: fwd,
-    body: (upstreamMethod === 'GET' || upstreamMethod === 'HEAD') ? undefined : await req.arrayBuffer(),
+    method: req.method,
+    headers: forward,
+    body: req.method === 'GET' || req.method === 'HEAD' ? undefined : await req.arrayBuffer(),
     redirect: 'follow',
     cache: 'no-store'
   });
-
-  // If we converted HEAD->GET, respond like HEAD (headers only, no body)
-  if (req.method === 'HEAD') {
-    const headOnly = new Headers(upstream.headers);
-    for (const [k, v] of Object.entries(cors)) headOnly.set(k, v);
-    return new Response(null, {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      headers: headOnly
-    });
-  }
 
   const headers = new Headers(upstream.headers);
   for (const [k, v] of Object.entries(cors)) headers.set(k, v);
