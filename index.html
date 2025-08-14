@@ -13,7 +13,6 @@
     font-family: Arial, sans-serif;
     background-color: #000;
   }
-  /* … (all your existing styles remain unchanged) … */
   .container {
     display: grid;
     grid-template-columns: 350px 1fr;
@@ -71,46 +70,58 @@
   </div>
 
 <script>
+// ====== DEBUG ======
+const DEBUG = true;
+function dlog(...a){ if (DEBUG) console.log('[UM-IPTV]', ...a); }
+
+// ====== DOM REFS ======
 const video = document.getElementById("video");
 const sidebar = document.getElementById("sidebar");
 const hamburger = document.getElementById("hamburger");
 const playerContainer = document.getElementById("player-container");
+
+// ====== PLAYER STATE ======
 let player = null;
 let hlsInstance = null;
 let nowPlayingIndex = null;
-
 let channelData = [];
 let filteredChannels = [];
 
-// --- Proxy helper to avoid Mixed Content ---
+// ====== PROXY WRAPPER ======
 function wrapWithProxy(u) {
   try {
-    return /^http:\/\//i.test(u) ? `/api/proxy?url=${encodeURIComponent(u)}` : u;
-  } catch (e) {
+    return /^http:\\/\\//i.test(u) ? `/api/proxy?url=${encodeURIComponent(u)}` : u;
+  } catch {
     return u;
   }
 }
 
-// Load channels from JSON
+// ====== LOAD CHANNELS ======
 async function loadChannels() {
   try {
-    const response = await fetch('channels.json');
-    channelData = await response.json();
+    const res = await fetch('channels.json');
+    dlog('channels.json status', res.status);
+    channelData = await res.json();
+    dlog('channels loaded:', channelData.length);
     filteredChannels = [...channelData];
     renderChannels(filteredChannels);
     if (filteredChannels.length > 0) playChannel(filteredChannels[0], 0);
-  } catch (err) { console.error("Failed to load channels.json", err); }
+  } catch (err) {
+    console.error("Failed to load channels.json", err);
+  }
 }
 
+// ====== RENDER LIST ======
 function renderChannels(list) {
   const container = document.getElementById("channels");
   const count = document.getElementById("count");
   container.innerHTML = "";
 
-  // Group by category
+  // group by category
   const byCat = {};
   list.forEach(ch => {
-    (byCat[ch.category] ||= []).push(ch);
+    const key = ch.category || 'Other';
+    (byCat[key] ||= []).push(ch);
   });
 
   Object.keys(byCat).sort().forEach(cat => {
@@ -119,10 +130,12 @@ function renderChannels(list) {
     h.textContent = cat;
     container.appendChild(h);
 
-    byCat[cat].forEach((ch, i) => {
+    byCat[cat].forEach((ch) => {
       const div = document.createElement('div');
       div.className = 'channel';
-      div.onclick = () => playChannel(ch, list.indexOf(ch));
+
+      const idx = filteredChannels.indexOf(ch);
+      div.addEventListener('click', () => playChannel(ch, idx));
 
       const img = document.createElement('img');
       img.src = ch.thumbnail;
@@ -141,7 +154,7 @@ function renderChannels(list) {
       meta.appendChild(catg);
       div.appendChild(meta);
 
-      if (nowPlayingIndex === list.indexOf(ch)) {
+      if (nowPlayingIndex === idx) {
         const badge = document.createElement('span');
         badge.className = 'badge';
         badge.textContent = "Now Playing";
@@ -151,10 +164,15 @@ function renderChannels(list) {
       container.appendChild(div);
     });
   });
+
   count.textContent = `Channels: ${list.length}`;
 }
 
+// ====== PLAY CHANNEL ======
 async function playChannel(ch, index) {
+  if (!ch) return;
+  dlog('click:', ch?.name, 'idx=', index, ch);
+
   nowPlayingIndex = index;
   renderChannels(filteredChannels);
 
@@ -163,73 +181,101 @@ async function playChannel(ch, index) {
   video.src = "";
   video.muted = true;
 
-  if (ch.type.toLowerCase() === "hls") {
+  const t = (ch.type || '').toLowerCase();
+  dlog('type:', t);
+
+  if (t === "hls") {
     const src = ch.manifestUri;
+    dlog('HLS load ->', src);
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = wrapWithProxy(src);
-      video.play().then(() => { video.muted = false; }).catch(() => {});
+      const u = wrapWithProxy(src);
+      dlog('native HLS URL:', u);
+      video.src = u;
+      video.play().then(() => { video.muted = false; dlog('native HLS playing'); })
+                  .catch(err => console.error('native HLS play err', err));
     } else if (Hls.isSupported()) {
+      dlog('Hls.js supported');
       hlsInstance = new Hls({
         xhrSetup: (xhr, url) => {
           const newUrl = wrapWithProxy(url);
+          dlog('Hls.js request:', url, '->', newUrl);
           xhr.open('GET', newUrl, true);
         }
       });
+      hlsInstance.on(Hls.Events.ERROR, (e, data) => console.error('Hls.js error', data));
       hlsInstance.loadSource(src);
       hlsInstance.attachMedia(video);
       hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
-        video.play().then(() => { video.muted = false; }).catch(() => {});
+        dlog('Hls.js manifest parsed');
+        video.play().then(()=>{ video.muted = false; }).catch(err => console.error('play err', err));
       });
-    } else { console.error("HLS not supported"); }
+    } else {
+      console.error("HLS not supported");
+    }
     return;
   }
 
   if (shaka.Player.isBrowserSupported()) {
+    dlog('Shaka supported');
     player = new shaka.Player(video);
-    // Proxy all http:// requests (manifest/segments/license)
+
+    // buffering config
+    player.configure({ streaming: { bufferingGoal: 15, rebufferingGoal: 10, bufferBehind: 10 }, abr: { enabled: true } });
+
+    // proxy ALL http:// requests (manifest/segments/license)
     const net = player.getNetworkingEngine();
     net.registerRequestFilter((_type, request) => {
       if (request.uris && request.uris.length) {
-        request.uris = request.uris.map(wrapWithProxy);
+        request.uris = request.uris.map(u => {
+          const p = wrapWithProxy(u);
+          if (DEBUG) dlog('Shaka req:', u, '->', p);
+          return p;
+        });
       }
     });
 
-    player.configure({ streaming: { bufferingGoal: 15, rebufferingGoal: 10, bufferBehind: 10 }, abr: { enabled: true } });
-
-    const t = ch.type.toLowerCase();
+    // DRM config
     if (t === 'clearkey') {
       player.configure({ drm: { clearKeys: { [ch.keyId]: ch.key } } });
     } else if (t === 'dash_widevine' || t === 'widevine' || t === 'dash') {
       if (ch.licenseUrl) {
-        player.configure({ drm: { servers: { 'com.widevine.alpha': wrapWithProxy(ch.licenseUrl) } } });
+        const lic = wrapWithProxy(ch.licenseUrl);
+        dlog('License URL:', lic);
+        player.configure({ drm: { servers: { 'com.widevine.alpha': lic } } });
       }
     }
 
-    player.load(wrapWithProxy(ch.manifestUri)).then(() => { video.muted = false; }).catch(err => console.error(err));
+    const murl = wrapWithProxy(ch.manifestUri);
+    dlog('Shaka load ->', murl);
+    player.load(murl)
+      .then(() => { dlog('Shaka loaded OK'); video.muted = false; })
+      .catch(err => { console.error('Shaka load error', err); });
+  } else {
+    console.error('Shaka not supported in this browser');
   }
 }
 
-// Search
- document.getElementById("search").addEventListener("input", (e) => {
-   const q = e.target.value.toLowerCase().trim();
-   filteredChannels = channelData.filter(ch =>
-     ch.name.toLowerCase().includes(q) ||
-     ch.category.toLowerCase().includes(q)
-   );
-   renderChannels(filteredChannels);
- });
+// ====== SEARCH ======
+document.getElementById("search").addEventListener("input", (e) => {
+  const q = e.target.value.toLowerCase().trim();
+  filteredChannels = channelData.filter(ch =>
+    ch.name.toLowerCase().includes(q) ||
+    ch.category.toLowerCase().includes(q)
+  );
+  renderChannels(filteredChannels);
+});
 
-// Initial load
+// ====== INIT ======
 loadChannels();
 
-// Keyboard shortcuts (optional, unchanged)
+// ====== SHORTCUTS ======
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName.toLowerCase() === 'input') return;
   if (e.key === 'ArrowDown') { const n = Math.min((nowPlayingIndex ?? 0) + 1, filteredChannels.length - 1); playChannel(filteredChannels[n], n); }
   if (e.key === 'ArrowUp')   { const n = Math.max((nowPlayingIndex ?? 0) - 1, 0); playChannel(filteredChannels[n], n); }
 });
 
-// Hamburger toggle
+// ====== SIDEBAR TOGGLE ======
 hamburger.addEventListener("click", () => {
   sidebar.classList.toggle("hidden");
   playerContainer.classList.toggle("fullwidth");
