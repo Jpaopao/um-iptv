@@ -49,7 +49,7 @@
   },
   {
     "name": "GMA 7",
-    "type": "DASH_WIDEVINE",
+    "type": "DASH",
     "manifestUri": "http://143.44.136.110:6910/001/2/ch00000090990000001093/manifest.mpd?virtualDomain=001.live_hls.zte.com",
     "licenseUrl": "http://143.44.136.74:9443/widevine/?deviceId=02:00:00:00:00:00",
     "logo": "https://i.imgur.com/Cu1tAY8.png"
